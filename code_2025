@@ -1,0 +1,165 @@
+# ================================
+# Logistic Regression on ETF Halts
+# ================================
+
+# Load required libraries
+library(readxl)     # read Excel
+library(dplyr)      # data manipulation
+library(ggplot2)    # plots
+library(pROC)       # ROC curve and AUC
+
+# 1. Load Data
+df <- read_excel("/Users/dragonvipor_/Downloads/Trading Halts.xlsx")   # <-- replace with your filename
+
+# Inspect data
+print(head(df))
+print(str(df))
+
+# Convert categorical variables into proper formats
+df$Bond_ETF <- as.factor(df$`Bond ETF`)
+df$Halts_Aug24 <- as.numeric(df$Halts_Aug24)  # Number of halts
+
+# 2. Poisson regression model
+poisson_model <- glm(Halts_Aug24 ~ `Price (USD)` + Volume + Turnover + Bond_ETF,
+                     data = df, family = poisson(link = "log"))
+
+summary(poisson_model)
+
+# 3. Predicted number of halts
+df$pred_halts <- predict(poisson_model, type = "response")
+
+# 4. Plot predicted vs actual halts
+ggplot(df, aes(x = pred_halts, y = Halts_Aug24)) +
+  geom_point(size = 3, color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Predicted vs Actual Number of Halts",
+       x = "Predicted Halts",
+       y = "Actual Halts") +
+  theme_minimal()
+
+summary(poisson_model)$deviance
+summary(poisson_model)$df.residual
+
+r_squared <- cor(df$Halts_Aug24, df$pred_halts)^2
+cat("R-squared (predicted vs actual):", r_squared, "\n")
+
+brier_score <- mean((df$pred_halts - df$Halts_Aug24)^2)
+cat("Brier Score:", brier_score, "\n")
+
+roc_obj <- roc(df$Halts_Aug24, df$pred_halts)
+auc_val <- auc(roc_obj)
+cat("AUC:", auc_val, "\n")
+plot(roc_obj, col = "blue", main = "ROC Curve for Halt Prediction")
+
+install.packages("car")
+library(car)
+vif(poisson_model)
+
+library(sandwich)
+library(lmtest)
+coeftest(poisson_model, vcov = vcovHC(poisson_model, type = "HC1"))
+
+# 3. Gradient Boosting Machine (GBM) model for small datasets
+library(gbm)
+library(caret)
+library(ggplot2)
+library(pROC)
+library(reshape2)
+
+
+
+# ----------------------------
+# 1. Hyperparameter grid for tuning
+# ----------------------------
+grid <- expand.grid(
+  interaction.depth = c(1, 2, 3),
+  shrinkage = c(0.01, 0.05),
+  n.minobsinnode = c(2, 3)
+)
+
+results <- data.frame()
+set.seed(123)
+
+for (i in 1:nrow(grid)) {
+  params <- grid[i, ]
+  
+  model <- gbm(
+    formula = Halts_Aug24 ~ `Price (USD)` + Volume + Turnover + Bond_ETF,
+    distribution = "poisson",
+    data = df,
+    n.trees = 5000,
+    interaction.depth = params$interaction.depth,
+    shrinkage = params$shrinkage,
+    n.minobsinnode = params$n.minobsinnode,
+    bag.fraction = 1,
+    cv.folds = 5,
+    verbose = FALSE
+  )
+  
+  best_iter <- gbm.perf(model, method = "cv", plot.it = FALSE)
+  cv_dev <- model$cv.error[best_iter]
+  
+  results <- rbind(results, cbind(params, best_iter, cv_dev))
+}
+
+# Select best parameters
+best_row <- results[which.min(results$cv_dev), ]
+print("Best hyperparameters:")
+print(best_row)
+
+# ----------------------------
+# 2. Train final tuned GBM
+# ----------------------------
+set.seed(123)
+gbm_model <- gbm(
+  formula = Halts_Aug24 ~ `Price (USD)` + Volume + Turnover + Bond_ETF,
+  distribution = "poisson",
+  data = df,
+  n.trees = best_row$best_iter,
+  interaction.depth = best_row$interaction.depth,
+  shrinkage = best_row$shrinkage,
+  n.minobsinnode = best_row$n.minobsinnode,
+  bag.fraction = 1,
+  cv.folds = 5,
+  verbose = FALSE
+)
+
+best_iter <- gbm.perf(gbm_model, method = "cv")
+cat("Best number of GBM trees:", best_iter, "\n")
+
+# Predictions
+df$pred_halts_gbm <- predict(gbm_model, n.trees = best_iter, type = "response")
+
+# ----------------------------
+# 3. Metrics
+# ----------------------------
+r_squared_gbm <- cor(df$Halts_Aug24, df$pred_halts_gbm)^2
+brier_score_gbm <- mean((df$pred_halts_gbm - df$Halts_Aug24)^2)
+roc_obj_gbm <- roc(df$Halts_Aug24, df$pred_halts_gbm)
+auc_val_gbm <- auc(roc_obj_gbm)
+
+cat("GBM R-squared:", r_squared_gbm, "\n")
+cat("GBM Brier Score:", brier_score_gbm, "\n")
+cat("GBM AUC:", auc_val_gbm, "\n")
+
+# Variable importance
+summary(gbm_model, n.trees = best_iter)
+
+# ----------------------------
+# 4. Comparison plot with Poisson
+# ----------------------------
+df_plot <- df %>%
+  select(Halts_Aug24, pred_halts, pred_halts_gbm) %>%
+  rename(Poisson = pred_halts, GBM = pred_halts_gbm)
+
+df_melt <- melt(df_plot, id.vars = "Halts_Aug24",
+                variable.name = "Model", value.name = "Predicted")
+
+ggplot(df_melt, aes(x = Predicted, y = Halts_Aug24, color = Model)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  labs(title = "Comparison of Poisson vs GBM Predictions",
+       x = "Predicted Halts",
+       y = "Actual Halts") +
+  theme_minimal() +
+  scale_color_manual(values = c("Poisson" = "blue", "GBM" = "darkgreen"))
