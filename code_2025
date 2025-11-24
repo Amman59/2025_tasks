@@ -9,7 +9,7 @@ library(ggplot2)    # plots
 library(pROC)       # ROC curve and AUC
 
 # 1. Load Data
-df <- read_excel("/Users/dragonvipor_/Downloads/Trading Halts.xlsx")   # <-- replace with your filename
+df <- read_excel("/Users/dragonvipor_/Downloads/Trading Halts.xlsx")  
 
 # Inspect data
 print(head(df))
